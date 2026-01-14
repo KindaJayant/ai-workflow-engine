@@ -2,36 +2,96 @@ import express from "express";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 
+import { askPrompt } from "./prompts/ask.v1.js";
+import { validateLLMResponse } from "./utils/validateResponse.js";
+
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-const client = new OpenAI({
+// Initialize OpenAI client only if API key exists
+let client = null;
+if (process.env.OPENAI_API_KEY) {
+  client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
+  });
+}
+
+/**
+ * Health check
+ */
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 
-app.post("/ask", async(req, res) => {
-    const{ question } = req.body;
+/**
+ * Ask endpoint
+ */
+app.post("/ask", async (req, res) => {
+  const { question } = req.body;
 
-    if (!question) {
-        return res.status(400).json({ error: "question is required" });
-    }
-
-    const response  = await client.chat.completions.create({
-        model : "gpt-4o-mini",
-        messages: [
-            { role: "system", content: "You are a helpful assistant." },
-            { role: "user", content: question }
-        ],
-        temperature: 0.3
+  // Input validation
+  if (!question || typeof question !== "string") {
+    return res.status(400).json({
+      error: "Invalid request",
+      message: "Field 'question' must be a non-empty string",
     });
+  }
 
-    res.json({
-        answer: response.choices[0].message.content
+  // LLM not configured
+  if (!client) {
+    return res.status(503).json({
+      error: "LLM provider not configured",
+      hint: "Set OPENAI_API_KEY to enable responses",
     });
+  }
+
+  let completion;
+
+  try {
+    completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: askPrompt(question),
+      temperature: 0.3,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: "Failed to call LLM provider",
+      details: err.message,
+    });
+  }
+
+  // Safe JSON parsing
+  let parsed;
+  try {
+    parsed = JSON.parse(
+      completion.choices[0].message.content
+    );
+  } catch (err) {
+    return res.status(500).json({
+      error: "Invalid JSON returned by LLM",
+    });
+  }
+
+  // Schema validation
+  if (!validateLLMResponse(parsed)) {
+    return res.status(500).json({
+      error: "LLM response failed schema validation",
+    });
+  }
+
+  // Stable response contract
+  return res.json({
+    answer: parsed.answer,
+    confidence: parsed.confidence,
+  });
 });
 
-app.listen(3000, () => {
-    console.log("Server running on port 3000");
-})
+/**
+ * Start server
+ */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
