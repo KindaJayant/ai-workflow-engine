@@ -4,6 +4,7 @@ import OpenAI from "openai";
 
 import { askPrompt } from "./prompts/ask.v1.js";
 import { validateLLMResponse } from "./utils/validateResponse.js";
+import { jobsRouter } from "./routes/jobs.js";
 
 dotenv.config();
 
@@ -26,7 +27,7 @@ app.get("/health", (req, res) => {
 });
 
 /**
- * Ask endpoint
+ * Synchronous ask endpoint (Day 2)
  */
 app.post("/ask", async (req, res) => {
   const { question } = req.body;
@@ -87,6 +88,11 @@ app.post("/ask", async (req, res) => {
     confidence: parsed.confidence,
   });
 });
+
+/**
+ * Asynchronous jobs endpoint (Day 3)
+ */
+app.use("/jobs", jobsRouter(client));
 
 /**
  * Start server
