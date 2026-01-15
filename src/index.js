@@ -6,6 +6,9 @@ import { askPrompt } from "./prompts/ask.v1.js";
 import { validateLLMResponse } from "./utils/validateResponse.js";
 import { jobsRouter } from "./routes/jobs.js";
 
+import { retrieveRelevantChunks } from "./rag/retriever.js";
+import { ragPrompt } from "./rag/prompt.js";
+
 dotenv.config();
 
 const app = express();
@@ -32,7 +35,6 @@ app.get("/health", (req, res) => {
 app.post("/ask", async (req, res) => {
   const { question } = req.body;
 
-  // Input validation
   if (!question || typeof question !== "string") {
     return res.status(400).json({
       error: "Invalid request",
@@ -40,7 +42,6 @@ app.post("/ask", async (req, res) => {
     });
   }
 
-  // LLM not configured
   if (!client) {
     return res.status(503).json({
       error: "LLM provider not configured",
@@ -49,7 +50,6 @@ app.post("/ask", async (req, res) => {
   }
 
   let completion;
-
   try {
     completion = await client.chat.completions.create({
       model: "gpt-4o-mini",
@@ -63,30 +63,83 @@ app.post("/ask", async (req, res) => {
     });
   }
 
-  // Safe JSON parsing
   let parsed;
   try {
-    parsed = JSON.parse(
-      completion.choices[0].message.content
-    );
-  } catch (err) {
+    parsed = JSON.parse(completion.choices[0].message.content);
+  } catch {
     return res.status(500).json({
       error: "Invalid JSON returned by LLM",
     });
   }
 
-  // Schema validation
   if (!validateLLMResponse(parsed)) {
     return res.status(500).json({
       error: "LLM response failed schema validation",
     });
   }
 
-  // Stable response contract
   return res.json({
     answer: parsed.answer,
     confidence: parsed.confidence,
   });
+});
+
+/**
+ * RAG endpoint (Day 4)
+ */
+app.post("/rag", async (req, res) => {
+  const { question } = req.body;
+
+  if (!question || typeof question !== "string") {
+    return res.status(400).json({
+      error: "Invalid request",
+      message: "Field 'question' must be a non-empty string",
+    });
+  }
+
+  // Retrieve relevant chunks
+  const chunks = retrieveRelevantChunks(question);
+
+  // No relevant data → no hallucination
+  if (chunks.length === 0) {
+    return res.json({
+      answer: "I don't know",
+      sources: [],
+    });
+  }
+
+  // LLM not configured (still show retrieval worked)
+  if (!client) {
+    return res.status(503).json({
+      error: "LLM provider not configured",
+      retrievedContext: chunks.map(c => c.docId),
+    });
+  }
+
+  let completion;
+  try {
+    completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: ragPrompt(question, chunks),
+      temperature: 0,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: "Failed to call LLM provider",
+      details: err.message,
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(completion.choices[0].message.content);
+  } catch {
+    return res.status(500).json({
+      error: "Invalid JSON returned by LLM",
+    });
+  }
+
+  return res.json(parsed);
 });
 
 /**
